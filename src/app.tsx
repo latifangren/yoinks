@@ -28,7 +28,7 @@ import {
   type VideoInfo,
 } from './lib/ytdlp.js'
 
-const OUT_DIR = path.join(os.homedir(), 'Downloads')
+const DEFAULT_OUT_DIR = path.join(os.homedir(), 'Downloads')
 const YOINK_BUTTON = 'yoink'
 const DONE_LABEL = '↵ yoink another'
 const TAGLINE = 'yoink any video. paste. yoink. done.'
@@ -129,6 +129,8 @@ type AppProps = {
   initialUrl?: string
   clipboardUrl?: string
   initialThemeMode?: ThemeMode
+  outDir?: string
+  embedChapters?: boolean
   onOutcome: (outcome: Outcome) => void
 }
 
@@ -150,9 +152,13 @@ function AppContent({
   clipboardUrl,
   onOutcome,
   cycleTheme,
+  outDir: outDirProp,
+  embedChapters = false,
 }: {
   initialUrl?: string
   clipboardUrl?: string
+  outDir?: string
+  embedChapters?: boolean
   onOutcome: (outcome: Outcome) => void
   cycleTheme: () => void
 }) {
@@ -259,7 +265,10 @@ function AppContent({
       }
       try {
         const ffmpegLocation = await findFfmpeg()
-        const base = {ytdlp: ytdlpRef.current, ffmpegLocation, url, choice, outDir: OUT_DIR}
+        const baseChoice = embedChapters
+          ? {...choice, args: [...choice.args, '--embed-chapters', '--embed-metadata']}
+          : choice
+        const base = {ytdlp: ytdlpRef.current, ffmpegLocation, url, choice: baseChoice, outDir: outDirProp ?? DEFAULT_OUT_DIR}
         let filepath: string
         try {
           // reuse the probe's metadata — starts immediately instead of re-extracting

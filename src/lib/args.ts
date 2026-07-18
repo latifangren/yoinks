@@ -5,11 +5,16 @@ export type CliArgs = {
   version: boolean
   initialUrl?: string
   themeMode?: ThemeMode
+  outDir?: string
+  best: boolean
+  mp3: boolean
+  embedChapters: boolean
+  update: boolean
   error?: string
 }
 
 export function parseArgs(args: string[]): CliArgs {
-  const result: CliArgs = {help: false, version: false}
+  const result: CliArgs = {help: false, version: false, best: false, mp3: false, embedChapters: false, update: false}
   const positional: string[] = []
 
   for (let index = 0; index < args.length; index++) {
@@ -27,6 +32,21 @@ export function parseArgs(args: string[]): CliArgs {
       const value = arg.slice('--theme='.length)
       if (!isThemeMode(value)) return {...result, error: `unknown theme “${value}” — use auto, light, or dark`}
       result.themeMode = value
+    } else if (arg === '-o' || arg === '--output') {
+      const value = args[++index]
+      if (!value) return {...result, error: `${arg} needs a directory path`}
+      result.outDir = value
+    } else if (arg.startsWith('--output=')) {
+      result.outDir = arg.slice('--output='.length)
+      if (!result.outDir) return {...result, error: '--output needs a directory path'}
+    } else if (arg === '--best') {
+      result.best = true
+    } else if (arg === '--mp3') {
+      result.mp3 = true
+    } else if (arg === '--embed-chapters') {
+      result.embedChapters = true
+    } else if (arg === '--update') {
+      result.update = true
     } else if (arg.startsWith('-')) {
       return {...result, error: `unknown option “${arg}”`}
     } else {

@@ -324,17 +324,47 @@ function removePartials(destinations: string[]): Promise<unknown> {
   )
 }
 
-function toNumber(value: string | undefined): number | undefined {
+export function toNumber(value: string | undefined): number | undefined {
   if (!value || value === 'NA' || value === 'None') return undefined
   const n = Number.parseFloat(value)
   return Number.isFinite(n) ? n : undefined
 }
 
-function cleanYtDlpError(stderr: string): string {
+export function cleanYtDlpError(stderr: string): string {
   const lines = stderr
     .split('\n')
     .map(l => l.trim())
     .filter(l => l.startsWith('ERROR:'))
   const last = lines.at(-1)
   return last ? last.replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/, '') : ''
+}
+
+/**
+ * Self-update the yt-dlp binary via its built-in `-U` flag.
+ * Returns the stdout output on success, throws on failure.
+ */
+export function updateYtDlp(ytdlp: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ytdlp, ['-U'], {stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000})
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) {
+        resolve(stdout.trim() || 'yt-dlp updated successfully.')
+      } else {
+        reject(new Error(cleanYtDlpError(stderr) || `yt-dlp update failed (exit code ${code}).`))
+      }
+    })
+  })
+}
+
+/**
+ * Build the extra yt-dlp arguments for embedding chapter markers.
+ * Returns ['--embed-chapters', '--embed-metadata'] to also keep metadata.
+ */
+export function embedChaptersArgs(): string[] {
+  return ['--embed-chapters', '--embed-metadata']
 }

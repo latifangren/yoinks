@@ -150,6 +150,24 @@ button:disabled{background:#3f3f46;cursor:default;color:#71717a}
       <input id="outdir-input" type="text" value="/downloads" placeholder="/downloads"/>
       <p class="outdir-hint">Inside Docker this maps to your host directory (see docker-compose.yml)</p>
     </div>
+    <div style="margin-top:1rem">
+      <label for="subfolder-input">Output subfolder <span style="font-size:0.7rem;color:#71717a;text-transform:none">(Optional)</span></label>
+      <input id="subfolder-input" type="text" value="" placeholder="e.g. music/"/>
+    </div>
+    <div style="margin-top:1rem;display:flex;flex-wrap:wrap;gap:1rem">
+      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;font-size:0.85rem;color:#e4e4e7;cursor:pointer">
+        <input id="best-checkbox" type="checkbox" onchange="if(this.checked)document.getElementById('mp3-checkbox').checked=false"/>
+        Best quality (auto)
+      </label>
+      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;font-size:0.85rem;color:#e4e4e7;cursor:pointer">
+        <input id="mp3-checkbox" type="checkbox" onchange="if(this.checked)document.getElementById('best-checkbox').checked=false"/>
+        Audio only (MP3)
+      </label>
+      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;font-size:0.85rem;color:#e4e4e7;cursor:pointer">
+        <input id="embed-chapters-checkbox" type="checkbox"/>
+        Embed chapters
+      </label>
+    </div>
   </div>
   <p id="status-text"></p>
   <div id="choices-area"></div>
@@ -197,7 +215,17 @@ function handleStatus(s,id){
     setStatus(s.status)
   } else if(s.phase==='picking'){
     setStatus('')
-    renderChoices(s,id)
+    const isBest = document.getElementById('best-checkbox').checked
+    const isMp3 = document.getElementById('mp3-checkbox').checked
+    if (isMp3) {
+      const audioIdx = s.choices.findIndex(c => c.kind === 'audio')
+      const targetIdx = audioIdx !== -1 ? audioIdx : s.choices.length - 1
+      startDownload(id, targetIdx)
+    } else if (isBest) {
+      startDownload(id, 0)
+    } else {
+      renderChoices(s,id)
+    }
   } else if(s.phase==='downloading'){
     setStatus('')
     renderProgress(s)
@@ -256,10 +284,16 @@ function renderError(msg){
 
 async function startDownload(id,choiceIndex){
   const outDir=document.getElementById('outdir-input').value.trim()||'/downloads'
+  const subfolder=document.getElementById('subfolder-input').value.trim()
+  const embedChapters=document.getElementById('embed-chapters-checkbox').checked
   document.getElementById('choices-area').innerHTML=''
   document.getElementById('result-area').innerHTML=''
   setStatus('Starting download…')
-  await fetch('/api/jobs/'+id+'/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({choiceIndex,outDir})})
+  await fetch('/api/jobs/'+id+'/download',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({choiceIndex,outDir,subfolder,embedChapters})
+  })
 }
 
 function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -380,17 +414,23 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     if (!job) return jsonErr(res, 'job not found', 404)
     if (job.status.phase !== 'picking') return jsonErr(res, 'job not in picking phase')
 
-    const body = (await readBody(req)) as {choiceIndex?: number; outDir?: string}
+    const body = (await readBody(req)) as {choiceIndex?: number; outDir?: string; subfolder?: string; embedChapters?: boolean}
     const status = job.status as Extract<JobStatus, {phase: 'picking'}>
     const choiceIndex = Number(body.choiceIndex ?? 0)
-    const outDir = sanitizeOutDir(body.outDir)
+    let outDir = sanitizeOutDir(body.outDir)
+    if (body.subfolder) {
+      const cleanedSub = body.subfolder.trim().replace(/^[\/\\]+|[\/\\]+$/g, '')
+      if (cleanedSub) {
+        outDir = path.join(outDir, cleanedSub)
+      }
+    }
 
     if (choiceIndex < 0 || choiceIndex >= status.choices.length) {
       return jsonErr(res, 'invalid choiceIndex')
     }
 
     jsonOk(res, {ok: true})
-    void runDownload(job, choiceIndex, outDir)
+    void runDownload(job, choiceIndex, outDir, Boolean(body.embedChapters))
     return
   }
 
@@ -453,12 +493,17 @@ async function runProbe(job: Job): Promise<void> {
 
 // ── download logic ────────────────────────────────────────────────────────────
 
-async function runDownload(job: Job, choiceIndex: number, outDir: string): Promise<void> {
+async function runDownload(job: Job, choiceIndex: number, outDir: string, embedChapters = false): Promise<void> {
   const jobWithData = job as Job & {
     infoJsonPath?: string
     choices?: ReturnType<typeof buildChoices>
   }
   const choice = jobWithData.choices![choiceIndex]!
+  const choiceArgs = [...choice.args]
+  if (embedChapters) {
+    choiceArgs.push('--embed-chapters', '--embed-metadata')
+  }
+  const finalizedChoice = { ...choice, args: choiceArgs }
 
   const update = (s: JobStatus) => {
     job.status = s
@@ -479,7 +524,7 @@ async function runDownload(job: Job, choiceIndex: number, outDir: string): Promi
         ytdlp: ytdlpBin,
         ffmpegLocation,
         url: currentUrl,
-        choice,
+        choice: finalizedChoice,
         outDir,
       }
 
