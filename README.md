@@ -62,13 +62,42 @@ click the theme control in the footer to cycle through `auto`, `light`, and
 - The UI is [Ink](https://github.com/vadimdemedes/ink) — React for the
   terminal.
 
+## WebUI + Docker
+
+Run yoinks as a LAN-accessible WebUI with Docker Compose:
+
+```sh
+docker compose up --build
+```
+
+Then open `http://localhost:3000` on the host, or from another device on your
+LAN: `http://<host-lan-ip>:3000`. Downloads are written to `./downloads` on the
+host via the `/downloads` container mount.
+
+The WebUI supports:
+
+- URL input and format probing
+- format selection
+- real-time download progress over Server-Sent Events
+- custom output directory (container path, default `/downloads`)
+- batch downloads via newline- or comma-separated URLs
+- optional Basic Auth via `BASIC_AUTH=user:pass`
+
+For local non-Docker WebUI development:
+
+```sh
+npm run build
+OUT_DIR=./downloads PORT=3000 npm run start:web
+```
+
 ## Development
 
 ```sh
 npm install
-npm run build        # bundle to dist/ with tsup
+npm run build        # bundle CLI + WebUI server to dist/ with tsup
 npm run dev          # rebuild on change
 node dist/cli.js <url>
+npm run start:web    # run the WebUI server after building
 npm run typecheck
 ```
 

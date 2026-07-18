@@ -1,0 +1,25 @@
+services:
+  yoinks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: yoinks-web:latest
+    container_name: yoinks-web
+    restart: unless-stopped
+    ports:
+      # Change the left side to use a different host port, e.g. "8080:3000"
+      - "3000:3000"
+    volumes:
+      # Downloads will appear in ./downloads on the host
+      - ./downloads:/downloads
+      # Cache the yt-dlp binary between container restarts
+      - yoinks-bin:/root/.yoinks
+    environment:
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      OUT_DIR: "/downloads"
+      # Uncomment and set to enable HTTP Basic Auth (format "user:pass"):
+      # BASIC_AUTH: "admin:secret"
+
+volumes:
+  yoinks-bin:
