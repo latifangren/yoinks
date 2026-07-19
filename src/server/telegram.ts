@@ -135,21 +135,24 @@ const pendingDownloads = new Map<string, PendingDownload>()
 function buildQualityKeyboard(choices: any[]): any {
   const buttons: any[][] = []
 
-  // Group choices by resolution
+  // Group choices by effective resolution (min of width/height for vertical videos)
   const resolutions = new Map<number, any[]>()
   for (const choice of choices) {
     const heightMatch = choice.label.match(/(\d+)p/)
     const height = heightMatch ? parseInt(heightMatch[1]) : 0
-    if (!resolutions.has(height)) resolutions.set(height, [])
-    resolutions.get(height)!.push(choice)
+    // For YouTube Shorts (vertical), height in label is the longer dimension
+    // Use a reasonable cap: treat anything > 1080 as 1080p equivalent
+    const effectiveRes = height > 1080 ? 1080 : height
+    if (!resolutions.has(effectiveRes)) resolutions.set(effectiveRes, [])
+    resolutions.get(effectiveRes)!.push(choice)
   }
 
   // Sort resolutions descending
   const sortedHeights = Array.from(resolutions.keys()).sort((a, b) => b - a)
 
-  // Add video quality buttons (limit to 720p and below)
+  // Add video quality buttons (limit to 1080p and below)
   for (const height of sortedHeights) {
-    if (height === 0 || height > 720) continue
+    if (height === 0 || height > 1080) continue
     const videoChoices = resolutions.get(height)!
     // Pick best video choice (highest bitrate)
     const bestVideo = videoChoices.reduce((a, b) => {
