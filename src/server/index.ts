@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {createRequire} from 'node:module'
 import {buildChoices, download, ensureYtDlp, findFfmpeg, probe} from '../lib/ytdlp.js'
+import {startTelegramBot} from './telegram.js'
 
 const VERSION: string = createRequire(import.meta.url)('../../package.json').version
 
@@ -634,6 +635,11 @@ server.listen(PORT, HOST, () => {
   console.log(`  Output:  ${OUT_DIR}`)
   if (BASIC_AUTH) console.log(`  Auth:    basic auth enabled`)
   console.log()
+
+  // Start Telegram bot (non-blocking, runs alongside HTTP server)
+  startTelegramBot().catch(err => {
+    console.error('[telegram] Bot failed to start:', err)
+  })
 })
 
 process.on('SIGTERM', () => server.close())

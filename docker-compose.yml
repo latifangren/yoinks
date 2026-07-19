@@ -11,7 +11,7 @@ services:
       - "3000:3000"
     volumes:
       # Downloads will appear in ./downloads on the host
-      - ./downloads:/downloads
+      - /mnt/hdd2_HDD/Yoinks/Downloads:/downloads
       # Cache the yt-dlp binary between container restarts
       - yoinks-bin:/root/.yoinks
     environment:
@@ -20,6 +20,10 @@ services:
       OUT_DIR: "/downloads"
       # Uncomment and set to enable HTTP Basic Auth (format "user:pass"):
       # BASIC_AUTH: "admin:secret"
+
+      # Telegram bot (optional)
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_ALLOWED_USERS: "${TELEGRAM_ALLOWED_USERS:-}"
 
 volumes:
   yoinks-bin:

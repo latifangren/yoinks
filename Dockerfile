@@ -15,7 +15,8 @@ WORKDIR /app
 
 # yt-dlp needs python3 + ffmpeg for merging/mp3 extraction
 # python3 is required by some yt-dlp extractor plugins
-RUN apk add --no-cache ffmpeg python3 ca-certificates
+RUN apk add --no-cache ffmpeg python3 py3-pip ca-certificates
+RUN pip3 install --break-system-packages yt-dlp
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
@@ -30,6 +31,10 @@ ENV OUT_DIR=/downloads
 # Port the WebUI listens on
 ENV PORT=3000
 ENV HOST=0.0.0.0
+
+# Telegram bot (optional — leave empty to disable)
+ENV TELEGRAM_BOT_TOKEN=""
+ENV TELEGRAM_ALLOWED_USERS=""
 
 EXPOSE 3000
 
