@@ -5,129 +5,128 @@
   <img src="assets/logo-light.svg" alt="yoinks" width="288">
 </picture>
 
-yoink any video. paste. yoink. done.
+**yoink any video. paste. yoink. done.**
 
-Download videos from YouTube, X/Twitter, Instagram, Threads, TikTok and
-1,800+ other sites — right from your terminal. Paste a url, pick a
-resolution (or audio-only mp3), done. No popups, no fake download buttons,
-no sketchy redirects.
+Download videos from YouTube, X/Twitter, Instagram, Threads, TikTok and 1,800+ other sites — right from your terminal, WebUI workspace, or Telegram bot. Paste a URL, pick a resolution (or audio-only format), done. No popups, no fake download buttons, no sketchy redirects.
 
-### Media Workspace & Downloader
+### 🌐 WebUI Media Workspace & Downloader
 <img src="assets/yoink-dashboard.png" alt="yoinks media workspace dashboard" width="100%">
 
-### Media Gallery
+### 🎬 Integrated Media Gallery
 <img src="assets/yoink-gallery.png" alt="yoinks media gallery" width="100%">
 
-## Install
+---
+
+## 🌟 Key Features
+
+- ⚡ **Terminal CLI**: Interactive Ink TTY interface or non-interactive scriptable mode (`--best`, `--mp3`, `-o <dir>`).
+- 🌐 **WebUI Media Workspace**: Neo-brutalist Bento Grid web interface with real-time pipeline status, batch URL support, and preset seeds.
+- 🎬 **Media Gallery**: Integrated player modal with HTTP 206 range-request streaming for video & audio playback, file export, and disk management.
+- 🔒 **Visual Authentication**: Protected workspace with visual login screen, session cookie auth (`AUTH_PASSWORD` / `BASIC_AUTH`), and header logout button.
+- 🤖 **Telegram Bot**: Long-polling bot with live progress bar (`[████████░░] 80%`), quality selector keyboard, and audio format selection (MP3, M4A, Opus).
+- 📁 **Download History**: Automatic persistent download history logged to `~/.yoinks/history.json`.
+- 🐳 **Docker Self-Hosting**: Out-of-the-box containerization support.
+
+---
+
+## 📦 Installation & Quick Start
+
+### 1. Run from Source (WebUI Server)
 
 ```sh
-npm install -g yoinks
-```
+# Clone repository
+git clone https://github.com/latif/yoinks.git
+cd yoinks
 
-Or try it without installing anything:
-
-```sh
-npx yoinks
-```
-
-Requires Node 18+. Everything else (yt-dlp, ffmpeg) is fetched or bundled
-automatically.
-
-## Usage
-
-```sh
-$ yoinks https://youtu.be/dQw4w9WgXcQ    # straight to the format picker
-$ yoinks                                 # prompts for a url
-$ yoinks --theme light                   # force the light palette
-```
-
-yoinks takes over the terminal (full-screen, centered — and restores your
-scrollback on exit). Pick a format with ↑/↓ (or j/k, or number keys) and
-hit enter. `esc` goes back, `^c` quits. Or just use the mouse — the yoink
-button, the format list and the footer hints are all clickable, and
-clicking the logo takes you back home. Files are saved to `~/Downloads`,
-and the file path is printed to your terminal when you're done.
-
-The default `auto` theme uses your terminal's own foreground and background,
-so it follows light and dark terminal themes without guessing. Press `^t` or
-click the theme control in the footer to cycle through `auto`, `light`, and
-`dark` for the current session. Use `--theme auto`, `--theme light`, or
-`--theme dark` to choose the starting theme for one launch.
-
-<img src="assets/download-options.png" alt="yoinks format picker — resolutions with estimated file sizes, plus audio-only mp3" width="100%">
-
-## How it works
-
-- Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp). On first run,
-  yoinks downloads the standalone yt-dlp binary to `~/.yoinks/bin` —
-  no Python required. If you already have yt-dlp installed, it uses yours.
-- ffmpeg (needed for merging high-res streams and mp3 extraction) is found
-  on your PATH, with `ffmpeg-static` as a bundled fallback.
-- The UI is [Ink](https://github.com/vadimdemedes/ink) — React for the
-  terminal.
-
-## WebUI + Docker
-
-Run yoinks as a LAN-accessible WebUI with Docker Compose:
-
-```sh
-docker compose up --build
-```
-
-Then open `http://localhost:3000` on the host, or from another device on your
-LAN: `http://<host-lan-ip>:3000`. Downloads are written to `./downloads` on the
-host via the `/downloads` container mount.
-
-The WebUI supports:
-
-- URL input and format probing
-- format selection
-- real-time download progress over Server-Sent Events
-- custom output directory (container path, default `/downloads`)
-- batch downloads via newline- or comma-separated URLs
-- optional Basic Auth via `BASIC_AUTH=user:pass`
-
-For local non-Docker WebUI development:
-
-```sh
-npm run build
-OUT_DIR=./downloads PORT=3000 npm run start:web
-```
-
-## Development
-
-```sh
+# Install dependencies and build
 npm install
-npm run build        # bundle CLI + WebUI server to dist/ with tsup
-npm run dev          # rebuild on change
-node dist/cli.js <url>
-npm run start:web    # run the WebUI server after building
-npm run typecheck
+npm run build
+
+# Start WebUI server (default: http://localhost:3000)
+npm start
 ```
 
-To try it as a global command without publishing: `npm link`, then run
-`yoinks` anywhere.
+### 2. Run CLI Tool
 
-## Roadmap & Status
+```sh
+# Interactive CLI
+npx tsx src/cli.tsx <url>
 
-- [x] `--best` / `--mp3` flags to skip the picker (scriptable mode)
-- [x] `-o <dir>` to choose output folder
+# Scriptable / Non-interactive CLI
+npx tsx src/cli.tsx --best https://youtu.be/dQw4w9WgXcQ
+npx tsx src/cli.tsx --mp3 -o /downloads https://youtu.be/dQw4w9WgXcQ
+```
+
+### 3. Run via Docker Compose
+
+```sh
+# Copy environment configuration
+cp .env.example .env
+
+# Start container in background
+docker-compose up -d
+```
+
+### 4. Shell Installer (Linux / macOS)
+
+```sh
+./install.sh
+```
+
+---
+
+## ⚙️ Environment Variables
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `PORT` | WebUI server listening port | `3000` |
+| `HOST` | Bind address (`0.0.0.0` for LAN access) | `0.0.0.0` |
+| `OUT_DIR` | Directory to save downloaded files | `~/Downloads` or `/downloads` |
+| `AUTH_PASSWORD` | Optional workspace password/PIN for WebUI auth | _None (Public)_ |
+| `BASIC_AUTH` | Optional `user:password` for HTTP Basic Auth | _None_ |
+| `TELEGRAM_BOT_TOKEN` | BotFather token to enable Telegram bot | _None (Disabled)_ |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated list of allowed Telegram user IDs | _All users allowed_ |
+
+---
+
+## 🚀 Enhancements over Original Repository (Changelog)
+
+Compared to the upstream repository, this enhanced edition includes major architectural, UI/UX, security, and feature additions:
+
+| Feature / Area | Original Repository | Enhanced Fork Edition |
+| :--- | :--- | :--- |
+| **Web Interface** | Basic / Minimal Web UI | 🌐 **Single-Page WebUI Workspace** with Neo-Brutalist Bento Grid, preset seeds, batch link parsing, & live terminal process logs |
+| **Media Gallery** | ❌ None | 🎬 **Integrated Media Gallery** with video/audio player modal, HTTP 206 range-request streaming, export, & deletion |
+| **Authentication** | ❌ None | 🔒 **Visual Login Page** with session cookie auth (`AUTH_PASSWORD` / `BASIC_AUTH`), protected APIs, & header Logout button |
+| **Telegram Bot** | ❌ None / Minimal | 🤖 **Telegram Bot Integration** with live progress bar (`[████████░░]`), resolution picker, and audio format selector (MP3, M4A, Opus) |
+| **Architecture** | Monolithic `index.ts` (>1900 lines) | 🏗️ **Refactored Modular Architecture** (`ui.ts`, `jobs.ts`, `gallery.ts`, `index.ts` — each <800 lines) |
+| **Process Management** | Single global child process | ⚡ **Multi-child Process Tracking** (Set-based child process tracking; safe concurrent downloads) |
+| **Security & DOS** | Vulnerable to flag injection & payload DOS | 🛡️ **Flag Injection Protection** (`--` before URLs), payload byte caps (1 MB), & safe path traversal checks |
+| **Memory Optimization** | Loaded entire files into RAM buffer | 💾 **Streaming Uploads** via `fs.openAsBlob()` (zero RAM spikes during 50MB+ Telegram uploads) |
+| **History Tracking** | ❌ None | 📁 **Persistent Download History** logged to `~/.yoinks/history.json` |
+| **Temp File Management** | Temp metadata left in `/tmp` | 🧹 **Auto-Cleanup** of temporary JSON metadata files |
+
+---
+
+## 📋 Status & Roadmap
+
+- [x] `--best` / `--mp3` flags to skip format picker (scriptable mode)
+- [x] `-o <dir>` output folder selector
 - [x] Playlist / thread-with-multiple-videos & batch URL support
 - [x] Clipboard detection: launch bare and auto-suggest copied URL
 - [x] Self-update for yt-dlp binary (`yoinks --update`)
-- [x] Publish to npm (`npm i -g yoinks` / `npx yoinks`)
-- [x] `curl -fsSL https://yoinks.sh/install.sh | sh` installer (`install.sh`)
 - [x] Single-Page WebUI Media Workspace with Bento Grid & Media Gallery
 - [x] Visual Login Screen, Session Cookie Auth (`AUTH_PASSWORD`), & Logout Button
 - [x] Telegram Bot integration with live progress bar (`[████████░░]`) & audio format selector (MP3, M4A, Opus)
 - [x] Docker & docker-compose container support
+- [x] Persistent download history logging (`~/.yoinks/history.json`)
 
-## A note on fair use
+---
 
-yoinks is a personal-archiving tool. Downloading content may violate a
-platform's terms of service — only download what you have the right to
-keep, and be excellent to creators.
+## ⚖️ Fair Use & Disclaimer
 
-## License
+yoinks is a personal-archiving tool. Downloading content may violate a platform's terms of service — only download what you have the right to keep, and be excellent to creators.
+
+## 📄 License
 
 [MIT](LICENSE)
