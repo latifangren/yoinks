@@ -104,15 +104,19 @@ npm run typecheck
 To try it as a global command without publishing: `npm link`, then run
 `yoinks` anywhere.
 
-## Roadmap
+## Roadmap & Status
 
-- [ ] `--best` / `--mp3` flags to skip the picker (scriptable mode)
-- [ ] `-o <dir>` to choose the output folder
-- [ ] Playlist / thread-with-multiple-videos support
-- [ ] Clipboard detection: launch bare and auto-suggest the url you copied
-- [ ] Self-update for the bundled yt-dlp binary (`yt-dlp -U`)
+- [x] `--best` / `--mp3` flags to skip the picker (scriptable mode)
+- [x] `-o <dir>` to choose output folder
+- [x] Playlist / thread-with-multiple-videos & batch URL support
+- [x] Clipboard detection: launch bare and auto-suggest copied URL
+- [x] Self-update for yt-dlp binary (`yoinks --update`)
 - [x] Publish to npm (`npm i -g yoinks` / `npx yoinks`)
-- [ ] `curl yoinks.sh | sh` installer
+- [x] `curl -fsSL https://yoinks.sh/install.sh | sh` installer (`install.sh`)
+- [x] Single-Page WebUI Media Workspace with Bento Grid & Media Gallery
+- [x] Visual Login Screen, Session Cookie Auth (`AUTH_PASSWORD`), & Logout Button
+- [x] Telegram Bot integration with live progress bar (`[████████░░]`) & audio format selector (MP3, M4A, Opus)
+- [x] Docker & docker-compose container support
 
 ## A note on fair use
 
