@@ -82,17 +82,8 @@ function checkAuth(req: http.IncomingMessage): boolean {
   return false
 }
 
-function unauthorized(res: http.ServerResponse, req?: http.IncomingMessage): void {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  // Only send WWW-Authenticate for direct browser page/HTML requests to allow native basic auth
-  // Avoid WWW-Authenticate for SSE event streams or API calls to prevent browser EventSource hangs/popups
-  const isSseOrApi = req && (req.headers.accept?.includes('text/event-stream') || req.url?.startsWith('/api/'))
-  if (BASIC_AUTH && !isSseOrApi) {
-    headers['WWW-Authenticate'] = 'Basic realm="yoinks"'
-  }
-  res.writeHead(401, headers)
+function unauthorized(res: http.ServerResponse): void {
+  res.writeHead(401, {'Content-Type': 'application/json'})
   res.end(JSON.stringify({error: 'Unauthorized'}))
 }
 
@@ -153,6 +144,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
   const url = req.url ?? '/'
   const method = req.method ?? 'GET'
 
+  // Serve UI (Always public HTML shell — client JS renders custom Login Screen if auth required)
+  if (method === 'GET' && (url === '/' || url === '/index.html')) {
+    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
+    res.end(HTML)
+    return
+  }
+
   // Public Auth Routes
   if (method === 'GET' && url === '/api/auth/check') {
     return jsonOk(res, {
@@ -188,18 +186,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return
   }
 
-  if (!checkAuth(req)) return unauthorized(res, req)
+  // Protect all API routes
+  if (!checkAuth(req)) return unauthorized(res)
 
   // Auto-set session cookie if client logged in via Basic Auth header
   if (isAuthEnabled() && req.headers['authorization']?.startsWith('Basic ') && !parseCookies(req)['yoinks_session']) {
     res.setHeader('Set-Cookie', `yoinks_session=${getExpectedToken()}; Path=/; HttpOnly; SameSite=Lax`)
-  }
-
-  // Serve UI
-  if (method === 'GET' && (url === '/' || url === '/index.html')) {
-    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'})
-    res.end(HTML)
-    return
   }
 
   // GET /api/files — list downloaded media files
