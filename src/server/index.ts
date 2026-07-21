@@ -82,12 +82,18 @@ function checkAuth(req: http.IncomingMessage): boolean {
   return false
 }
 
-function unauthorized(res: http.ServerResponse): void {
-  res.writeHead(401, {
-    'WWW-Authenticate': 'Basic realm="yoinks"',
-    'Content-Type': 'text/plain',
-  })
-  res.end('Unauthorized')
+function unauthorized(res: http.ServerResponse, req?: http.IncomingMessage): void {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  // Only send WWW-Authenticate for direct browser page/HTML requests to allow native basic auth
+  // Avoid WWW-Authenticate for SSE event streams or API calls to prevent browser EventSource hangs/popups
+  const isSseOrApi = req && (req.headers.accept?.includes('text/event-stream') || req.url?.startsWith('/api/'))
+  if (BASIC_AUTH && !isSseOrApi) {
+    headers['WWW-Authenticate'] = 'Basic realm="yoinks"'
+  }
+  res.writeHead(401, headers)
+  res.end(JSON.stringify({error: 'Unauthorized'}))
 }
 
 // ── cached ytdlp binary path ─────────────────────────────────────────────────
@@ -182,7 +188,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return
   }
 
-  if (!checkAuth(req)) return unauthorized(res)
+  if (!checkAuth(req)) return unauthorized(res, req)
+
+  // Auto-set session cookie if client logged in via Basic Auth header
+  if (isAuthEnabled() && req.headers['authorization']?.startsWith('Basic ') && !parseCookies(req)['yoinks_session']) {
+    res.setHeader('Set-Cookie', `yoinks_session=${getExpectedToken()}; Path=/; HttpOnly; SameSite=Lax`)
+  }
 
   // Serve UI
   if (method === 'GET' && (url === '/' || url === '/index.html')) {

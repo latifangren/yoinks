@@ -1197,11 +1197,21 @@ async function startDownload(id,choiceIndex){
   document.getElementById('choices-area').innerHTML=''
   document.getElementById('result-area').innerHTML=''
   setStatus('Spinning up localized download subprocess…', 'warning')
-  await fetch('/api/jobs/'+id+'/download',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({choiceIndex,outDir,subfolder,embedChapters})
-  })
+  try {
+    const res = await fetch('/api/jobs/'+id+'/download',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({choiceIndex,outDir,subfolder,embedChapters})
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || 'Download request failed (' + res.status + ')')
+    }
+  } catch (e) {
+    setStatus('Failed to start download: ' + (e.message || e), 'error')
+    updateVisualNodes('error')
+    document.getElementById('probe-btn').disabled=false
+  }
 }
 
 function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
