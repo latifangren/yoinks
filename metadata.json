@@ -1,0 +1,8 @@
+{
+  "name": "Yoinks",
+  "description": "Yoink any video from YouTube, X, Instagram, Threads & 1800+ sites — right from your WebUI or Telegram bot. paste. yoink. done.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

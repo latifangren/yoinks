@@ -14,10 +14,11 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch",
+    "dev": "tsx watch src/server/index.ts",
     "test": "tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/cli.js",
+    "lint": "tsc --noEmit",
+    "start": "node dist/server/index.js",
     "start:web": "node dist/server/index.js",
     "prepublishOnly": "npm test && npm run typecheck && npm run build"
   },

@@ -9,9 +9,11 @@
  *   TELEGRAM_ALLOWED_USERS — Comma-separated Telegram user IDs (optional, empty = allow all)
  */
 
+import {openAsBlob} from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {probe, buildChoices, download, ensureYtDlp, findFfmpeg} from '../lib/ytdlp.js'
+import {saveDownloadHistory} from '../lib/history.js'
 
 const BOT_TOKEN = process.env['TELEGRAM_BOT_TOKEN']
 const ALLOWED_USERS = (process.env['TELEGRAM_ALLOWED_USERS'] ?? '')
@@ -57,8 +59,8 @@ async function api(method: string, body?: Record<string, unknown>): Promise<any>
   return data.result
 }
 
-async function sendMessage(chatId: number, text: string, replyTo?: number, replyMarkup?: any): Promise<void> {
-  await api('sendMessage', {
+async function sendMessage(chatId: number, text: string, replyTo?: number, replyMarkup?: any): Promise<TelegramMessage> {
+  return await api('sendMessage', {
     chat_id: chatId,
     text,
     reply_to_message_id: replyTo,
@@ -93,7 +95,8 @@ async function sendDocument(chatId: number, filePath: string, caption?: string):
 
   const form = new FormData()
   form.append('chat_id', String(chatId))
-  form.append('document', new Blob([await fs.readFile(filePath)]), path.basename(filePath))
+  const blob = await openAsBlob(filePath)
+  form.append('document', blob, path.basename(filePath))
   if (caption) form.append('caption', caption)
 
   const res = await fetch(`${API}/sendDocument`, {method: 'POST', body: form})
@@ -105,6 +108,82 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1048576).toFixed(1)} MB`
+}
+
+function formatProgressBar(percent: number, length = 10): string {
+  const filled = Math.max(0, Math.min(length, Math.round((percent / 100) * length)))
+  const empty = length - filled
+  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}]`
+}
+
+function formatSpeed(bps?: number): string {
+  if (!bps) return ''
+  const mb = bps / 1024 / 1024
+  if (mb >= 1) return `${mb.toFixed(1)} MB/s`
+  const kb = bps / 1024
+  return `${kb.toFixed(0)} KB/s`
+}
+
+function formatEta(seconds?: number): string {
+  if (!seconds) return ''
+  const m = Math.floor(seconds / 60)
+  const s = Math.floor(seconds % 60)
+  if (m > 0) return `${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`
+  return `${String(s).padStart(2, '0')}s`
+}
+
+function createThrottledProgressUpdater(chatId: number, messageId: number, title: string, label: string) {
+  let lastEditTime = 0
+  let timer: NodeJS.Timeout | null = null
+  let latestText = ''
+
+  const flush = async () => {
+    if (!latestText) return
+    lastEditTime = Date.now()
+    try {
+      await editMessageText(chatId, messageId, latestText)
+    } catch {}
+  }
+
+  return {
+    onProgress: (p: {downloadedBytes: number; totalBytes?: number; speed?: number; eta?: number}) => {
+      const pct = p.totalBytes && p.totalBytes > 0 ? Math.round((p.downloadedBytes / p.totalBytes) * 100) : undefined
+      const bar = pct !== undefined ? formatProgressBar(pct) : '[██████████]'
+      const pctStr = pct !== undefined ? `${pct}%` : `${formatBytes(p.downloadedBytes)}`
+      const speedStr = formatSpeed(p.speed)
+      const etaStr = formatEta(p.eta)
+      
+      const stats = [pctStr, speedStr, etaStr ? `ETA ${etaStr}` : ''].filter(Boolean).join(' · ')
+      latestText = `📥 Downloading: <b>${escapeHtml(title)}</b>\nFormat: ${escapeHtml(label)}\n\n${bar} ${stats}`
+
+      const now = Date.now()
+      if (now - lastEditTime >= 1500) {
+        if (timer) { clearTimeout(timer); timer = null }
+        void flush()
+      } else if (!timer) {
+        timer = setTimeout(() => {
+          timer = null
+          void flush()
+        }, 1500 - (now - lastEditTime))
+      }
+    },
+    onProcessing: () => {
+      latestText = `⚙️ Processing & converting: <b>${escapeHtml(title)}</b>`
+      const now = Date.now()
+      if (now - lastEditTime >= 1500) {
+        if (timer) { clearTimeout(timer); timer = null }
+        void flush()
+      } else if (!timer) {
+        timer = setTimeout(() => {
+          timer = null
+          void flush()
+        }, 1500 - (now - lastEditTime))
+      }
+    },
+    stop: () => {
+      if (timer) { clearTimeout(timer); timer = null }
+    }
+  }
 }
 
 function isAllowed(userId: number): boolean {
@@ -132,7 +211,7 @@ const pendingDownloads = new Map<string, PendingDownload>()
 
 // ── URL processing ────────────────────────────────────────────────────────────
 
-function buildQualityKeyboard(choices: any[]): any {
+function buildQualityKeyboard(pendingId: string, choices: any[]): any {
   const buttons: any[][] = []
 
   // Group choices by effective resolution (min of width/height for vertical videos)
@@ -161,11 +240,15 @@ function buildQualityKeyboard(choices: any[]): any {
       return bitrateA > bitrateB ? a : b
     })
     const index = choices.indexOf(bestVideo)
-    buttons.push([{text: `🎥 ${height}p`, callback_data: `quality:${index}`}])
+    buttons.push([{text: `🎥 ${height}p`, callback_data: `quality:${pendingId}:${index}`}])
   }
 
-  // Add audio-only option
-  buttons.push([{text: `🎵 Audio Only (MP3)`, callback_data: 'audio:mp3'}])
+  // Add expanded audio-only options
+  buttons.push([
+    {text: `🎵 MP3`, callback_data: `audio:${pendingId}:mp3`},
+    {text: `🎵 M4A`, callback_data: `audio:${pendingId}:m4a`},
+    {text: `🎵 Opus`, callback_data: `audio:${pendingId}:opus`},
+  ])
 
   return buttons.length > 1 ? {inline_keyboard: buttons} : null
 }
@@ -185,12 +268,12 @@ async function handleUrl(chatId: number, url: string, replyTo: number): Promise<
       return
     }
 
+    const pendingId = Math.random().toString(36).slice(2, 10)
     // Try to build quality keyboard
-    const keyboard = buildQualityKeyboard(choices)
+    const keyboard = buildQualityKeyboard(pendingId, choices)
 
     if (keyboard) {
       // YouTube-like site with resolution options — show selector
-      const pendingId = Math.random().toString(36).slice(2, 10)
       pendingDownloads.set(pendingId, {chatId, url, info, choices, replyTo, ytdlpBin})
 
       await sendMessage(
@@ -205,17 +288,42 @@ async function handleUrl(chatId: number, url: string, replyTo: number): Promise<
     } else {
       // Non-YouTube site (TikTok, Instagram, etc.) — download best format directly
       const bestChoice = choices[0]!
-      await sendMessage(
+      const statusMsg = await sendMessage(
         chatId,
         `📥 Downloading: <b>${escapeHtml(info.title ?? 'Unknown')}</b>\nFormat: ${escapeHtml(bestChoice.label)}`,
         replyTo,
       )
 
-      const ffmpegLocation = await findFfmpeg()
-      const filepath = await download(
-        {ytdlp: ytdlpBin, ffmpegLocation, url, choice: bestChoice, outDir: OUT_DIR},
-        {onProgress: () => {}, onProcessing: () => {}},
+      const updater = createThrottledProgressUpdater(
+        chatId,
+        statusMsg.message_id,
+        info.title ?? 'Unknown',
+        bestChoice.label,
       )
+
+      const ffmpegLocation = await findFfmpeg()
+      let filepath = ''
+      try {
+        filepath = await download(
+          {ytdlp: ytdlpBin, ffmpegLocation, url, choice: bestChoice, outDir: OUT_DIR},
+          updater,
+        )
+      } finally {
+        updater.stop()
+      }
+
+      let fileSize: number | undefined
+      try {
+        const stat = await fs.stat(filepath)
+        fileSize = stat.size
+      } catch {}
+
+      void saveDownloadHistory({
+        title: info.title ?? path.basename(filepath),
+        url,
+        filepath,
+        size: fileSize,
+      })
 
       await sendDocument(chatId, filepath, `✅ ${escapeHtml(info.title ?? path.basename(filepath))}`)
       await sendMessage(chatId, `💾 Saved locally: ${path.basename(filepath)}`, replyTo)
@@ -233,16 +341,12 @@ async function handleCallbackQuery(callback: CallbackQuery): Promise<void> {
 
   await answerCallbackQuery(callback.id)
 
-  const [action, value] = callback.data.split(':')
+  const [action, pendingId, value] = callback.data.split(':')
+  if (!pendingId) return
 
-  // Find the most recent pending download for this chat
-  let pending: PendingDownload | undefined
-  for (const [id, dl] of pendingDownloads) {
-    if (dl.chatId === callback.message.chat.id) {
-      pending = dl
-      pendingDownloads.delete(id)
-      break
-    }
+  const pending = pendingDownloads.get(pendingId)
+  if (pending) {
+    pendingDownloads.delete(pendingId)
   }
 
   if (!pending) {
@@ -255,7 +359,7 @@ async function handleCallbackQuery(callback: CallbackQuery): Promise<void> {
   }
 
   if (action === 'quality') {
-    const choiceIndex = parseInt(value)
+    const choiceIndex = parseInt(value ?? '')
     if (isNaN(choiceIndex) || choiceIndex < 0 || choiceIndex >= pending.choices.length) {
       await editMessageText(
         callback.message.chat.id,
@@ -266,18 +370,37 @@ async function handleCallbackQuery(callback: CallbackQuery): Promise<void> {
     }
 
     const choice = pending.choices[choiceIndex]!
-    await editMessageText(
+    const updater = createThrottledProgressUpdater(
       callback.message.chat.id,
       callback.message.message_id,
-      `📥 Downloading: <b>${escapeHtml(pending.info.title ?? 'Unknown')}</b>\nFormat: ${escapeHtml(choice.label)}`,
+      pending.info.title ?? 'Unknown',
+      choice.label,
     )
 
     try {
       const ffmpegLocation = await findFfmpeg()
-      const filepath = await download(
-        {ytdlp: pending.ytdlpBin, ffmpegLocation, url: pending.url, choice, outDir: OUT_DIR},
-        {onProgress: () => {}, onProcessing: () => {}},
-      )
+      let filepath = ''
+      try {
+        filepath = await download(
+          {ytdlp: pending.ytdlpBin, ffmpegLocation, url: pending.url, choice, outDir: OUT_DIR},
+          updater,
+        )
+      } finally {
+        updater.stop()
+      }
+
+      let fileSize: number | undefined
+      try {
+        const stat = await fs.stat(filepath)
+        fileSize = stat.size
+      } catch {}
+
+      void saveDownloadHistory({
+        title: pending.info.title ?? path.basename(filepath),
+        url: pending.url,
+        filepath,
+        size: fileSize,
+      })
 
       await sendDocument(
         callback.message.chat.id,
@@ -291,26 +414,45 @@ async function handleCallbackQuery(callback: CallbackQuery): Promise<void> {
     }
 
   } else if (action === 'audio') {
-    const format = value === 'opus' ? 'opus' : 'mp3'
-    await editMessageText(
+    const format = value === 'm4a' ? 'm4a' : value === 'opus' ? 'opus' : 'mp3'
+    const label = `Audio (${format.toUpperCase()})`
+    const updater = createThrottledProgressUpdater(
       callback.message.chat.id,
       callback.message.message_id,
-      `🎵 Extracting audio (${format.toUpperCase()}): <b>${escapeHtml(pending.info.title ?? 'Unknown')}</b>`,
+      pending.info.title ?? 'Unknown',
+      label,
     )
 
     try {
       const ffmpegLocation = await findFfmpeg()
-      // Create audio-only choice
       const audioChoice = {
-        label: `Audio ${format.toUpperCase()}`,
+        label,
         kind: 'audio' as const,
         args: ['-x', '--audio-format', format, '--audio-quality', '0'],
       }
 
-      const filepath = await download(
-        {ytdlp: pending.ytdlpBin, ffmpegLocation, url: pending.url, choice: audioChoice, outDir: OUT_DIR},
-        {onProgress: () => {}, onProcessing: () => {}},
-      )
+      let filepath = ''
+      try {
+        filepath = await download(
+          {ytdlp: pending.ytdlpBin, ffmpegLocation, url: pending.url, choice: audioChoice, outDir: OUT_DIR},
+          updater,
+        )
+      } finally {
+        updater.stop()
+      }
+
+      let fileSize: number | undefined
+      try {
+        const stat = await fs.stat(filepath)
+        fileSize = stat.size
+      } catch {}
+
+      void saveDownloadHistory({
+        title: pending.info.title ?? path.basename(filepath),
+        url: pending.url,
+        filepath,
+        size: fileSize,
+      })
 
       await sendDocument(
         callback.message.chat.id,

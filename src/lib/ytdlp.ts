@@ -16,19 +16,33 @@ function ytDlpAssetName(): string {
   return process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux'
 }
 
+const activeChildren = new Set<ChildProcess>()
+process.on('exit', () => {
+  for (const child of activeChildren) {
+    child.kill('SIGTERM')
+  }
+})
+
 // async on purpose: a spawnSync here blocks the event loop, which freezes
 // ink mid-frame — the user hits enter and sees nothing until it returns
 function commandWorks(cmd: string, args: string[]): Promise<boolean> {
   return new Promise(resolve => {
-    let child
+    let child: ChildProcess
     try {
       child = spawn(cmd, args, {stdio: 'ignore', timeout: 10_000})
+      activeChildren.add(child)
     } catch {
       resolve(false)
       return
     }
-    child.on('error', () => resolve(false))
-    child.on('close', code => resolve(code === 0))
+    child.on('error', () => {
+      activeChildren.delete(child)
+      resolve(false)
+    })
+    child.on('close', code => {
+      activeChildren.delete(child)
+      resolve(code === 0)
+    })
   })
 }
 
@@ -105,13 +119,19 @@ export type ProbeResult = {
 
 export async function probe(ytdlp: string, url: string, signal?: AbortSignal): Promise<ProbeResult> {
   const stdout = await new Promise<string>((resolve, reject) => {
-    const child = spawn(ytdlp, ['-J', '--no-playlist', '--no-warnings', url], {signal})
+    const child = spawn(ytdlp, ['-J', '--no-playlist', '--no-warnings', '--', url], {signal})
+    activeChildren.add(child)
+
     let out = ''
     let stderr = ''
     child.stdout.on('data', chunk => (out += chunk))
     child.stderr.on('data', chunk => (stderr += chunk))
-    child.on('error', reject)
+    child.on('error', err => {
+      activeChildren.delete(child)
+      reject(err)
+    })
     child.on('close', code => {
+      activeChildren.delete(child)
       if (code !== 0) {
         reject(new Error(cleanYtDlpError(stderr) || `yt-dlp exited with code ${code}`))
       } else {
@@ -212,10 +232,7 @@ export type DownloadHandlers = {
 const PROGRESS_PREFIX = 'YOINK|'
 const PROGRESS_TEMPLATE = `${PROGRESS_PREFIX}%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s`
 
-let activeChild: ChildProcess | undefined
-process.on('exit', () => activeChild?.kill('SIGTERM'))
-
-export function download(
+export async function download(
   opts: {
     ytdlp: string
     ffmpegLocation?: string
@@ -229,7 +246,7 @@ export function download(
   signal?: AbortSignal,
 ): Promise<string> {
   const args = [
-    ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : [opts.url]),
+    ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : ['--', opts.url]),
     ...opts.choice.args,
     '--no-playlist',
     '--no-warnings',
@@ -248,72 +265,81 @@ export function download(
   ]
   if (opts.ffmpegLocation) args.push('--ffmpeg-location', opts.ffmpegLocation)
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(opts.ytdlp, args, {signal})
-    activeChild = child
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const child = spawn(opts.ytdlp, args, {signal})
+      activeChildren.add(child)
 
-    let stderr = ''
-    let filepath = ''
-    let part = 0
-    let totalParts = 1
-    let lastDownloaded = 0
-    let buffer = ''
-    // every file yt-dlp writes this run, so a cancel can clean up after itself
-    const destinations: string[] = []
+      let stderr = ''
+      let filepath = ''
+      let part = 0
+      let totalParts = 1
+      let lastDownloaded = 0
+      let buffer = ''
+      // every file yt-dlp writes this run, so a cancel can clean up after itself
+      const destinations: string[] = []
 
-    child.stdout.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString()
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const rawLine of lines) {
-        const line = rawLine.trim()
-        if (!line) continue
-        if (line.startsWith(PROGRESS_PREFIX)) {
-          const [downloaded, total, totalEstimate, speed, eta] = line.slice(PROGRESS_PREFIX.length).split('|')
-          const downloadedBytes = toNumber(downloaded) ?? 0
-          if (downloadedBytes < lastDownloaded) part++
-          lastDownloaded = downloadedBytes
-          handlers.onProgress({
-            downloadedBytes,
-            totalBytes: toNumber(total) ?? toNumber(totalEstimate),
-            speed: toNumber(speed),
-            eta: toNumber(eta),
-            part,
-            totalParts,
-          })
-        } else if (line.includes('Downloading 1 format(s):')) {
-          // "[info] xxx: Downloading 1 format(s): 395+251" — each id is one file
-          totalParts = (line.split('format(s):')[1] ?? '').trim().split('+').length
-        } else if (line.includes('[Merger]') || line.includes('[ExtractAudio]')) {
-          const merging = /^\[Merger\] Merging formats into "(.+)"$/.exec(line)?.[1]
-          const extracting = /^\[ExtractAudio\] Destination: (.+)$/.exec(line)?.[1]
-          const target = merging ?? extracting
-          if (target) destinations.push(target)
-          handlers.onProcessing()
-        } else if (line.startsWith('[download] Destination: ')) {
-          destinations.push(line.slice('[download] Destination: '.length))
-        } else if (path.isAbsolute(line)) {
-          filepath = line
+      child.stdout.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString()
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const rawLine of lines) {
+          const line = rawLine.trim()
+          if (!line) continue
+          if (line.startsWith(PROGRESS_PREFIX)) {
+            const [downloaded, total, totalEstimate, speed, eta] = line.slice(PROGRESS_PREFIX.length).split('|')
+            const downloadedBytes = toNumber(downloaded) ?? 0
+            if (downloadedBytes < lastDownloaded) part++
+            lastDownloaded = downloadedBytes
+            handlers.onProgress({
+              downloadedBytes,
+              totalBytes: toNumber(total) ?? toNumber(totalEstimate),
+              speed: toNumber(speed),
+              eta: toNumber(eta),
+              part,
+              totalParts,
+            })
+          } else if (line.includes('Downloading 1 format(s):')) {
+            // "[info] xxx: Downloading 1 format(s): 395+251" — each id is one file
+            totalParts = (line.split('format(s):')[1] ?? '').trim().split('+').length
+          } else if (line.includes('[Merger]') || line.includes('[ExtractAudio]')) {
+            const merging = /^\[Merger\] Merging formats into "(.+)"$/.exec(line)?.[1]
+            const extracting = /^\[ExtractAudio\] Destination: (.+)$/.exec(line)?.[1]
+            const target = merging ?? extracting
+            if (target) destinations.push(target)
+            handlers.onProcessing()
+          } else if (line.startsWith('[download] Destination: ')) {
+            destinations.push(line.slice('[download] Destination: '.length))
+          } else if (path.isAbsolute(line)) {
+            filepath = line
+          }
         }
-      }
+      })
+      child.stderr.on('data', chunk => (stderr += chunk))
+      child.on('error', err => {
+        activeChildren.delete(child)
+        reject(err)
+      })
+      child.on('close', code => {
+        activeChildren.delete(child)
+        if (signal?.aborted) {
+          // cancelled on purpose — don't leave half-written files behind
+          void removePartials(destinations)
+          reject(new Error('Download cancelled.'))
+          return
+        }
+        if (code === 0 && filepath) {
+          resolve(filepath)
+        } else {
+          reject(new Error(cleanYtDlpError(stderr) || `Download failed (yt-dlp exit code ${code}).`))
+        }
+      })
     })
-    child.stderr.on('data', chunk => (stderr += chunk))
-    child.on('error', reject)
-    child.on('close', code => {
-      activeChild = undefined
-      if (signal?.aborted) {
-        // cancelled on purpose — don't leave half-written files behind
-        void removePartials(destinations)
-        reject(new Error('Download cancelled.'))
-        return
-      }
-      if (code === 0 && filepath) {
-        resolve(filepath)
-      } else {
-        reject(new Error(cleanYtDlpError(stderr) || `Download failed (yt-dlp exit code ${code}).`))
-      }
-    })
-  })
+  } finally {
+    if (opts.infoJsonPath) {
+      void fs.unlink(opts.infoJsonPath).catch(() => {})
+    }
+  }
 }
 
 function removePartials(destinations: string[]): Promise<unknown> {
@@ -346,12 +372,18 @@ export function cleanYtDlpError(stderr: string): string {
 export function updateYtDlp(ytdlp: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(ytdlp, ['-U'], {stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000})
+    activeChildren.add(child)
+
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
     child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
-    child.on('error', reject)
+    child.on('error', err => {
+      activeChildren.delete(child)
+      reject(err)
+    })
     child.on('close', code => {
+      activeChildren.delete(child)
       if (code === 0) {
         resolve(stdout.trim() || 'yt-dlp updated successfully.')
       } else {

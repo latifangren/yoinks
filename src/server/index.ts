@@ -15,9 +15,16 @@
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import fs from 'node:fs'
+import fsPromises from 'node:fs/promises'
+import crypto from 'node:crypto'
 import {createRequire} from 'node:module'
 import {buildChoices, download, ensureYtDlp, findFfmpeg, probe} from '../lib/ytdlp.js'
+import {saveDownloadHistory} from '../lib/history.js'
 import {startTelegramBot} from './telegram.js'
+import {HTML} from './ui.js'
+import {ChoiceDTO, Job, JobStatus, ProgressDTO, jobs, makeId, notifyListeners} from './jobs.js'
+import {handleStreamFile, listMediaFiles, resolveSafePath} from './gallery.js'
 
 const VERSION: string = createRequire(import.meta.url)('../../package.json').version
 
@@ -25,15 +32,54 @@ const PORT = Number(process.env['PORT'] ?? 3000)
 const HOST = process.env['HOST'] ?? '0.0.0.0'
 const OUT_DIR = process.env['OUT_DIR'] ?? path.join(os.homedir(), 'Downloads')
 const BASIC_AUTH = process.env['BASIC_AUTH'] // "user:pass"
+const AUTH_PASSWORD = process.env['AUTH_PASSWORD'] ?? (BASIC_AUTH ? (BASIC_AUTH.split(':')[1] ?? BASIC_AUTH) : undefined)
+const AUTH_SECRET = crypto.randomBytes(16).toString('hex')
 
 // ── auth helper ──────────────────────────────────────────────────────────────
 
+function getExpectedToken(): string {
+  if (!AUTH_PASSWORD) return ''
+  return crypto.createHash('sha256').update(`${AUTH_PASSWORD}:${AUTH_SECRET}`).digest('hex')
+}
+
+function parseCookies(req: http.IncomingMessage): Record<string, string> {
+  const list: Record<string, string> = {}
+  const rc = req.headers['cookie']
+  if (rc) {
+    for (const cookie of rc.split(';')) {
+      const parts = cookie.split('=')
+      const name = parts.shift()?.trim()
+      if (name) {
+        list[name] = decodeURIComponent(parts.join('=').trim())
+      }
+    }
+  }
+  return list
+}
+
+function isAuthEnabled(): boolean {
+  return Boolean(AUTH_PASSWORD)
+}
+
 function checkAuth(req: http.IncomingMessage): boolean {
-  if (!BASIC_AUTH) return true
+  if (!isAuthEnabled()) return true
+
+  // 1. Check session cookie
+  const cookies = parseCookies(req)
+  const token = cookies['yoinks_session']
+  if (token && token === getExpectedToken()) return true
+
+  // 2. Check HTTP Basic Auth
   const header = req.headers['authorization'] ?? ''
-  if (!header.startsWith('Basic ')) return false
-  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8')
-  return decoded === BASIC_AUTH
+  if (header.startsWith('Basic ')) {
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8')
+    if (BASIC_AUTH && decoded === BASIC_AUTH) return true
+    const parts = decoded.split(':')
+    const pass = parts[1] ?? parts[0]
+    if (pass === AUTH_PASSWORD) return true
+  }
+
+  return false
 }
 
 function unauthorized(res: http.ServerResponse): void {
@@ -44,265 +90,9 @@ function unauthorized(res: http.ServerResponse): void {
   res.end('Unauthorized')
 }
 
-// ── in-memory job registry ───────────────────────────────────────────────────
-
-type JobStatus =
-  | {phase: 'probing'; status: string}
-  | {phase: 'picking'; title: string; uploader?: string; duration?: number; choices: ChoiceDTO[]}
-  | {phase: 'downloading'; choiceLabel: string; progress?: ProgressDTO; processing: boolean}
-  | {phase: 'done'; filepath: string}
-  | {phase: 'error'; message: string}
-
-type ChoiceDTO = {index: number; label: string; kind: 'video' | 'audio'}
-type ProgressDTO = {
-  downloadedBytes: number
-  totalBytes?: number
-  speed?: number
-  eta?: number
-  part: number
-  totalParts: number
-  percent?: number
-}
-
-type Job = {
-  id: string
-  url: string
-  urls: string[]
-  status: JobStatus
-  abort: AbortController
-  /** SSE listeners waiting for status updates */
-  listeners: Array<(data: string) => void>
-}
-
-const jobs = new Map<string, Job>()
-
-function makeId(): string {
-  return Math.random().toString(36).slice(2, 10)
-}
-
-function notifyListeners(job: Job): void {
-  const data = JSON.stringify(job.status)
-  for (const fn of job.listeners) fn(data)
-  // clean up done/error jobs after a grace period
-  if (job.status.phase === 'done' || job.status.phase === 'error') {
-    setTimeout(() => jobs.delete(job.id), 60_000)
-  }
-}
-
 // ── cached ytdlp binary path ─────────────────────────────────────────────────
 
 let ytdlpBin = ''
-
-// ── HTML UI ──────────────────────────────────────────────────────────────────
-
-const HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>yoinks ${VERSION}</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#0f0f11;color:#e4e4e7;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem 1rem}
-h1{font-size:2rem;font-weight:800;letter-spacing:-.03em;margin-bottom:.25rem}
-.sub{color:#71717a;font-size:.85rem;margin-bottom:2rem}
-.card{background:#18181b;border:1px solid #27272a;border-radius:.75rem;padding:1.5rem;width:100%;max-width:560px}
-label{display:block;font-size:.8rem;color:#a1a1aa;margin-bottom:.4rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-input[type=text],input[type=url]{width:100%;background:#09090b;border:1px solid #3f3f46;border-radius:.5rem;padding:.65rem .85rem;color:#e4e4e7;font-size:1rem;outline:none;transition:border-color .15s}
-input[type=text]:focus,input[type=url]:focus{border-color:#6366f1}
-.row{display:flex;gap:.75rem;margin-bottom:1rem;align-items:stretch}
-.row>div{flex:1}
-.row button{flex-shrink:0;padding:.6rem 1.5rem;font-size:1rem}
-button{background:#6366f1;color:#fff;border:none;border-radius:.5rem;padding:.6rem 1.2rem;font-size:.9rem;font-weight:600;cursor:pointer;transition:background .15s}
-button:hover{background:#5255d9}
-button:disabled{background:#3f3f46;cursor:default;color:#71717a}
-.choices{margin-top:1rem;display:flex;flex-direction:column;gap:.5rem}
-.choice-btn{background:#27272a;color:#e4e4e7;text-align:left;border-radius:.5rem;padding:.6rem 1rem;font-size:.9rem;transition:background .15s}
-.choice-btn:hover{background:#3f3f46}
-.choice-btn.audio{border-left:3px solid #6366f1}
-.choice-btn.video{border-left:3px solid #22d3ee}
-.progress-wrap{margin-top:1rem}
-.prog-label{font-size:.85rem;color:#a1a1aa;margin-bottom:.4rem}
-.prog-bar-bg{background:#27272a;border-radius:9999px;height:8px;overflow:hidden}
-.prog-bar{background:#6366f1;height:100%;border-radius:9999px;transition:width .3s}
-.meta{font-size:.75rem;color:#71717a;margin-top:.35rem}
-.done-box{margin-top:1rem;background:#052e16;border:1px solid #166534;border-radius:.5rem;padding:.75rem 1rem}
-.done-box h3{color:#4ade80;font-size:.9rem;margin-bottom:.25rem}
-.done-path{font-family:monospace;font-size:.78rem;color:#86efac;word-break:break-all}
-.err-box{margin-top:1rem;background:#2d0a0a;border:1px solid #7f1d1d;border-radius:.5rem;padding:.75rem 1rem;font-size:.85rem;color:#f87171}
-.outdir-hint{font-size:.72rem;color:#52525b;margin-top:.3rem}
-#status-text{font-size:.85rem;color:#a1a1aa;margin-top:.75rem;min-height:1.2em}
-</style>
-</head>
-<body>
-<h1>yoinks</h1>
-<p class="sub">yoink any video. paste. yoink. done. &nbsp;·&nbsp; v${VERSION}</p>
-<div class="card" id="app">
-  <div>
-    <label for="url-input">Video URL(s) <span style="font-size:0.7rem;color:#71717a;text-transform:none">(Newlines/commas for playlists/batch)</span></label>
-    <div class="row">
-      <div>
-        <textarea id="url-input" rows="3" placeholder="https://youtube.com/watch?v=&#10;https://x.com/status/&#10;..." autocomplete="off" spellcheck="false" style="width:100%;background:#09090b;border:1px solid #3f3f46;border-radius:.5rem;padding:.65rem .85rem;color:#e4e4e7;font-size:1rem;outline:none;transition:border-color .15s;resize:vertical;font-family:monospace;"></textarea>
-      </div>
-      <button id="probe-btn" onclick="startProbe()">Probe</button>
-    </div>
-    <div>
-      <label for="outdir-input">Output directory</label>
-      <input id="outdir-input" type="text" value="/downloads" placeholder="/downloads"/>
-      <p class="outdir-hint">Inside Docker this maps to your host directory (see docker-compose.yml)</p>
-    </div>
-    <div style="margin-top:1rem">
-      <label for="subfolder-input">Output subfolder <span style="font-size:0.7rem;color:#71717a;text-transform:none">(Optional)</span></label>
-      <input id="subfolder-input" type="text" value="" placeholder="e.g. music/"/>
-    </div>
-    <div style="margin-top:1rem;display:flex;flex-wrap:wrap;gap:1rem">
-      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;font-size:0.85rem;color:#e4e4e7;cursor:pointer">
-        <input id="best-checkbox" type="checkbox" onchange="if(this.checked)document.getElementById('mp3-checkbox').checked=false"/>
-        Best quality (auto)
-      </label>
-      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;font-size:0.85rem;color:#e4e4e7;cursor:pointer">
-        <input id="mp3-checkbox" type="checkbox" onchange="if(this.checked)document.getElementById('best-checkbox').checked=false"/>
-        Audio only (MP3)
-      </label>
-      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;font-size:0.85rem;color:#e4e4e7;cursor:pointer">
-        <input id="embed-chapters-checkbox" type="checkbox"/>
-        Embed chapters
-      </label>
-    </div>
-  </div>
-  <p id="status-text"></p>
-  <div id="choices-area"></div>
-  <div id="progress-area"></div>
-  <div id="result-area"></div>
-</div>
-<script>
-let jobId = null
-let eventSource = null
-
-function setStatus(msg){document.getElementById('status-text').textContent = msg}
-function clearAreas(){
-  document.getElementById('choices-area').innerHTML=''
-  document.getElementById('progress-area').innerHTML=''
-  document.getElementById('result-area').innerHTML=''
-}
-
-async function startProbe(){
-  const url = document.getElementById('url-input').value.trim()
-  if(!url){setStatus('Please paste a URL.');return}
-  clearAreas()
-  setStatus('Probing…')
-  if(eventSource){eventSource.close();eventSource=null}
-  document.getElementById('probe-btn').disabled=true
-  try{
-    const res = await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})})
-    if(!res.ok){const e=await res.json();setStatus('Error: '+(e.error||res.status));document.getElementById('probe-btn').disabled=false;return}
-    const {jobId:id,count}=await res.json()
-    jobId=id
-    listenJob(id)
-  }catch(e){setStatus('Network error: '+e.message);document.getElementById('probe-btn').disabled=false}
-}
-
-function listenJob(id){
-  eventSource=new EventSource('/api/jobs/'+id+'/events')
-  eventSource.onmessage=e=>{
-    const s=JSON.parse(e.data)
-    handleStatus(s,id)
-  }
-  eventSource.onerror=()=>{setStatus('Connection lost.');document.getElementById('probe-btn').disabled=false}
-}
-
-function handleStatus(s,id){
-  if(s.phase==='probing'){
-    setStatus(s.status)
-  } else if(s.phase==='picking'){
-    setStatus('')
-    const isBest = document.getElementById('best-checkbox').checked
-    const isMp3 = document.getElementById('mp3-checkbox').checked
-    if (isMp3) {
-      const audioIdx = s.choices.findIndex(c => c.kind === 'audio')
-      const targetIdx = audioIdx !== -1 ? audioIdx : s.choices.length - 1
-      startDownload(id, targetIdx)
-    } else if (isBest) {
-      startDownload(id, 0)
-    } else {
-      renderChoices(s,id)
-    }
-  } else if(s.phase==='downloading'){
-    setStatus('')
-    renderProgress(s)
-  } else if(s.phase==='done'){
-    setStatus('')
-    renderDone(s.filepath)
-    document.getElementById('probe-btn').disabled=false
-    if(eventSource){eventSource.close();eventSource=null}
-  } else if(s.phase==='error'){
-    setStatus('')
-    renderError(s.message)
-    document.getElementById('probe-btn').disabled=false
-    if(eventSource){eventSource.close();eventSource=null}
-  }
-}
-
-function renderChoices(s,id){
-  const area=document.getElementById('choices-area')
-  let html='<div style="margin-top:.75rem"><p style="font-size:.85rem;color:#a1a1aa;margin-bottom:.5rem"><strong style="color:#e4e4e7">'+esc(s.title)+'</strong>'
-  if(s.uploader)html+=' &nbsp;·&nbsp; '+esc(s.uploader)
-  html+='</p><div class="choices">'
-  for(const c of s.choices){
-    html+='<button class="choice-btn '+c.kind+'" onclick="startDownload(\\'' +id+'\\','+c.index+')">'+esc(c.label)+'</button>'
-  }
-  html+='</div></div>'
-  area.innerHTML=html
-}
-
-function renderProgress(s){
-  const area=document.getElementById('progress-area')
-  const pct=s.progress&&s.progress.totalBytes?Math.round(s.progress.downloadedBytes/s.progress.totalBytes*100):null
-  let meta=''
-  if(s.processing){meta='⚙ processing…'}
-  else if(s.progress){
-    // If we're performing a batch download, enhance label to reflect total parts
-    if(s.progress.totalParts > 1) {
-      meta += '[Part ' + (s.progress.part + 1) + '/' + s.progress.totalParts + '] '
-    }
-    if(s.progress.speed)meta+=fmtSpeed(s.progress.speed)+'  '
-    if(s.progress.eta)meta+=fmtEta(s.progress.eta)+' left  '
-    if(pct!==null)meta+=pct+'%'
-  }
-  area.innerHTML='<div class="progress-wrap"><p class="prog-label">'+esc(s.choiceLabel)+'</p><div class="prog-bar-bg"><div class="prog-bar" style="width:'+(pct??0)+'%"></div></div><p class="meta">'+meta+'</p></div>'
-}
-
-function renderDone(fp){
-  document.getElementById('progress-area').innerHTML=''
-  document.getElementById('result-area').innerHTML='<div class="done-box"><h3>✓ Yoinked!</h3><p class="done-path">'+esc(fp)+'</p></div>'
-}
-
-function renderError(msg){
-  document.getElementById('choices-area').innerHTML=''
-  document.getElementById('progress-area').innerHTML=''
-  document.getElementById('result-area').innerHTML='<div class="err-box">✗ '+esc(msg)+'</div>'
-}
-
-async function startDownload(id,choiceIndex){
-  const outDir=document.getElementById('outdir-input').value.trim()||'/downloads'
-  const subfolder=document.getElementById('subfolder-input').value.trim()
-  const embedChapters=document.getElementById('embed-chapters-checkbox').checked
-  document.getElementById('choices-area').innerHTML=''
-  document.getElementById('result-area').innerHTML=''
-  setStatus('Starting download…')
-  await fetch('/api/jobs/'+id+'/download',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({choiceIndex,outDir,subfolder,embedChapters})
-  })
-}
-
-function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function fmtSpeed(bps){const k=bps/1024;if(k<1024)return k.toFixed(0)+'KB/s';return (k/1024).toFixed(1)+'MB/s'}
-function fmtEta(s){const m=Math.floor(s/60);const ss=Math.floor(s%60);return m>0?m+'m '+ss+'s':ss+'s'}
-</script>
-</body>
-</html>`
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
 
@@ -317,10 +107,20 @@ function jsonErr(res: http.ServerResponse, message: string, status = 400): void 
   res.end(JSON.stringify({error: message}))
 }
 
-async function readBody(req: http.IncomingMessage): Promise<unknown> {
+async function readBody(req: http.IncomingMessage, maxBytes = 1_048_576): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let buf = ''
-    req.on('data', (chunk: unknown) => (buf += String(chunk)))
+    let length = 0
+    req.on('data', (chunk: unknown) => {
+      const chunkBuf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+      length += chunkBuf.length
+      if (length > maxBytes) {
+        req.destroy()
+        reject(new Error('Payload too large'))
+        return
+      }
+      buf += chunkBuf.toString('utf8')
+    })
     req.on('end', () => {
       try {
         resolve(JSON.parse(buf))
@@ -344,10 +144,45 @@ function parseUrlList(text: string): string[] {
 // ── route handler ─────────────────────────────────────────────────────────────
 
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  if (!checkAuth(req)) return unauthorized(res)
-
   const url = req.url ?? '/'
   const method = req.method ?? 'GET'
+
+  // Public Auth Routes
+  if (method === 'GET' && url === '/api/auth/check') {
+    return jsonOk(res, {
+      authEnabled: isAuthEnabled(),
+      authenticated: checkAuth(req),
+    })
+  }
+
+  if (method === 'POST' && url === '/api/auth/login') {
+    const body = (await readBody(req)) as {password?: string}
+    const inputPass = body.password?.trim()
+    if (!isAuthEnabled()) {
+      return jsonOk(res, {ok: true, message: 'Auth is not enabled'})
+    }
+    if (inputPass && (inputPass === AUTH_PASSWORD || (BASIC_AUTH && inputPass === BASIC_AUTH.split(':')[1]))) {
+      const token = getExpectedToken()
+      res.writeHead(200, {
+        'Set-Cookie': `yoinks_session=${token}; Path=/; HttpOnly; SameSite=Lax`,
+        'Content-Type': 'application/json',
+      })
+      res.end(JSON.stringify({ok: true}))
+      return
+    }
+    return jsonErr(res, 'Invalid password or PIN', 401)
+  }
+
+  if (method === 'POST' && url === '/api/auth/logout') {
+    res.writeHead(200, {
+      'Set-Cookie': 'yoinks_session=; Path=/; HttpOnly; Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+      'Content-Type': 'application/json',
+    })
+    res.end(JSON.stringify({ok: true}))
+    return
+  }
+
+  if (!checkAuth(req)) return unauthorized(res)
 
   // Serve UI
   if (method === 'GET' && (url === '/' || url === '/index.html')) {
@@ -356,9 +191,103 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     return
   }
 
+  // GET /api/files — list downloaded media files
+  if (method === 'GET' && url === '/api/files') {
+    try {
+      const files = await listMediaFiles(OUT_DIR, OUT_DIR)
+      // Sort newest first
+      files.sort((a, b) => b.mtime - a.mtime)
+      return jsonOk(res, {files, outDir: OUT_DIR})
+    } catch (err) {
+      return jsonErr(res, err instanceof Error ? err.message : String(err), 500)
+    }
+  }
+
+  const parsedUrl = new URL(url, `http://${req.headers.host || 'localhost'}`)
+
+  // GET /api/files/download — download/export a file
+  if (method === 'GET' && parsedUrl.pathname === '/api/files/download') {
+    try {
+      const queryPath = parsedUrl.searchParams.get('path')
+      if (!queryPath) return jsonErr(res, 'path parameter is required', 400)
+
+      const resolved = resolveSafePath(OUT_DIR, queryPath)
+      if (!resolved) {
+        return jsonErr(res, 'Access denied: Path traversal attempt', 403)
+      }
+
+      if (!fs.existsSync(resolved)) {
+        return jsonErr(res, 'File not found', 404)
+      }
+
+      const filename = path.basename(resolved)
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+      })
+      fs.createReadStream(resolved).pipe(res)
+      return
+    } catch (err) {
+      return jsonErr(res, err instanceof Error ? err.message : String(err), 500)
+    }
+  }
+
+  // GET /api/files/stream — stream/play a file
+  if (method === 'GET' && parsedUrl.pathname === '/api/files/stream') {
+    try {
+      const queryPath = parsedUrl.searchParams.get('path')
+      if (!queryPath) return jsonErr(res, 'path parameter is required', 400)
+
+      const resolved = resolveSafePath(OUT_DIR, queryPath)
+      if (!resolved) {
+        return jsonErr(res, 'Access denied: Path traversal attempt', 403)
+      }
+
+      if (!fs.existsSync(resolved)) {
+        return jsonErr(res, 'File not found', 404)
+      }
+
+      const ext = path.extname(resolved).toLowerCase()
+      handleStreamFile(req, res, resolved, ext)
+      return
+    } catch (err) {
+      return jsonErr(res, err instanceof Error ? err.message : String(err), 500)
+    }
+  }
+
+  // DELETE /api/files — delete a file
+  if (method === 'DELETE' && parsedUrl.pathname === '/api/files') {
+    try {
+      const queryPath = parsedUrl.searchParams.get('path')
+      if (!queryPath) return jsonErr(res, 'path parameter is required', 400)
+
+      const resolved = resolveSafePath(OUT_DIR, queryPath)
+      if (!resolved) {
+        return jsonErr(res, 'Access denied: Path traversal attempt', 403)
+      }
+
+      if (!fs.existsSync(resolved)) {
+        return jsonErr(res, 'File not found', 404)
+      }
+
+      await fsPromises.unlink(resolved)
+      return jsonOk(res, {ok: true, message: 'File deleted successfully'})
+    } catch (err) {
+      return jsonErr(res, err instanceof Error ? err.message : String(err), 500)
+    }
+  }
+
   // POST /api/jobs — create a job (probe phase)
   if (method === 'POST' && url === '/api/jobs') {
-    const body = (await readBody(req)) as {url?: string}
+    let body: {url?: string}
+    try {
+      body = (await readBody(req)) as {url?: string}
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Payload too large') {
+        return jsonErr(res, 'Payload too large', 413)
+      }
+      return jsonErr(res, 'Invalid request body', 400)
+    }
     const videoUrl = body.url?.trim()
     if (!videoUrl) return jsonErr(res, 'url is required')
 
@@ -415,7 +344,16 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     if (!job) return jsonErr(res, 'job not found', 404)
     if (job.status.phase !== 'picking') return jsonErr(res, 'job not in picking phase')
 
-    const body = (await readBody(req)) as {choiceIndex?: number; outDir?: string; subfolder?: string; embedChapters?: boolean}
+    let body: {choiceIndex?: number; outDir?: string; subfolder?: string; embedChapters?: boolean}
+    try {
+      body = (await readBody(req)) as {choiceIndex?: number; outDir?: string; subfolder?: string; embedChapters?: boolean}
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Payload too large') {
+        return jsonErr(res, 'Payload too large', 413)
+      }
+      return jsonErr(res, 'Invalid request body', 400)
+    }
+
     const status = job.status as Extract<JobStatus, {phase: 'picking'}>
     const choiceIndex = Number(body.choiceIndex ?? 0)
     let outDir = sanitizeOutDir(body.outDir)
@@ -590,6 +528,17 @@ async function runDownload(job: Job, choiceIndex: number, outDir: string, embedC
         filepath = await download(base, handlers, job.abort.signal)
       }
       lastFilepaths.push(filepath)
+      let fileSize: number | undefined
+      try {
+        const stat = await fsPromises.stat(filepath)
+        fileSize = stat.size
+      } catch {}
+      void saveDownloadHistory({
+        title: job.urls.length > 1 ? path.basename(filepath) : ((job.status as any).title ?? path.basename(filepath)),
+        url: currentUrl,
+        filepath,
+        size: fileSize,
+      })
     }
 
     update({
@@ -608,6 +557,12 @@ async function runDownload(job: Job, choiceIndex: number, outDir: string, embedC
 
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch(err => {
+    if (err instanceof Error && err.message === 'Payload too large') {
+      if (!res.headersSent) {
+        jsonErr(res, 'Payload too large', 413)
+      }
+      return
+    }
     console.error('[yoinks-server] unhandled error:', err)
     if (!res.headersSent) {
       res.writeHead(500)
