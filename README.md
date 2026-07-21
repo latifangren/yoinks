@@ -12,7 +12,11 @@ Download videos from YouTube, X/Twitter, Instagram, Threads, TikTok and
 resolution (or audio-only mp3), done. No popups, no fake download buttons,
 no sketchy redirects.
 
-<img src="assets/home.png" alt="yoinks home screen — paste a link and hit yoink" width="100%">
+### Media Workspace & Downloader
+<img src="assets/yoink-dashboard.png" alt="yoinks media workspace dashboard" width="100%">
+
+### Media Gallery
+<img src="assets/yoink-gallery.png" alt="yoinks media gallery" width="100%">
 
 ## Install
 
