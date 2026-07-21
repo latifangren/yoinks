@@ -246,7 +246,7 @@ export async function download(
   signal?: AbortSignal,
 ): Promise<string> {
   const args = [
-    ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : ['--', opts.url]),
+    ...(opts.infoJsonPath ? ['--load-info-json', opts.infoJsonPath] : []),
     ...opts.choice.args,
     '--no-playlist',
     '--no-warnings',
@@ -262,6 +262,7 @@ export async function download(
     '--no-simulate',
     '-o',
     path.join(opts.outDir, '%(title).60s.%(ext)s'),
+    ...(opts.infoJsonPath ? [] : ['--', opts.url]),
   ]
   if (opts.ffmpegLocation) args.push('--ffmpeg-location', opts.ffmpegLocation)
 
