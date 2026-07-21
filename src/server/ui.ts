@@ -626,7 +626,7 @@ function renderGalleryList(files) {
       '<span class="text-3xl block mb-2">📥</span>' +
       '<h4 class="font-bold text-sm text-slate-700">No media assets found</h4>' +
       '<p class="text-xs text-slate-400 mt-1 max-w-sm mx-auto">Items downloaded using the Yoinks Engine will show up here automatically. Go paste a link and start yoinking!</p>' +
-      '<button onclick="setView(\'dashboard\')" class="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2 rounded-lg border-2 border-slate-900 shadow-[2px_2px_0_0_#000] transition-all cursor-pointer">' +
+      '<button onclick="setView(\\'dashboard\\')" class="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2 rounded-lg border-2 border-slate-900 shadow-[2px_2px_0_0_#000] transition-all cursor-pointer">' +
         'Open Downloader' +
       '</button>' +
     '</div>'
@@ -658,7 +658,7 @@ function renderGalleryList(files) {
     const sName = esc(file.name)
     const sType = esc(file.type)
     const sSize = formatBytes(file.size)
-    const folderLabel = (file.relPath.includes('/') || file.relPath.includes('\\'))
+    const folderLabel = (file.relPath.includes('/') || file.relPath.includes('\\\\'))
       ? '<span class="flex items-center gap-1 truncate" title="' + sRelPath + '">📁 Folder: <span class="text-indigo-600 font-mono font-bold">' + esc(pathDir(file.relPath)) + '</span></span>'
       : ''
     
@@ -683,7 +683,7 @@ function renderGalleryList(files) {
       '</div>' +
       
       '<div class="flex items-center gap-1.5 border-t border-slate-100 pt-3">' +
-        '<button onclick="openPreviewModal(\'' + sRelPath.replace(/'/g, "\\'") + '\', \'' + sName.replace(/'/g, "\\'") + '\', \'' + sSize + '\', \'' + sType + '\')" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] py-1.5 rounded-lg border border-slate-900 shadow-[1px_1px_0_0_#000] transition-all flex items-center justify-center gap-1 cursor-pointer">' +
+        '<button onclick="openPreviewModal(\\'' + sRelPath.replace(/'/g, "\\'") + '\\', \\'' + sName.replace(/'/g, "\\'") + '\\', \\'' + sSize + '\\', \\'' + sType + '\\')" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] py-1.5 rounded-lg border border-slate-900 shadow-[1px_1px_0_0_#000] transition-all flex items-center justify-center gap-1 cursor-pointer">' +
           '<span>▶️</span> Preview' +
         '</button>' +
         
@@ -693,7 +693,7 @@ function renderGalleryList(files) {
           '</svg>' +
         '</a>' +
         
-        '<button onclick="deleteFile(\'' + sRelPath.replace(/'/g, "\\'") + '\', \'' + sName.replace(/'/g, "\\'") + '\')" class="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg border border-red-200 hover:border-red-500 transition-colors flex items-center justify-center cursor-pointer" title="Delete File">' +
+        '<button onclick="deleteFile(\\'' + sRelPath.replace(/'/g, "\\'") + '\\', \\'' + sName.replace(/'/g, "\\'") + '\\')" class="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg border border-red-200 hover:border-red-500 transition-colors flex items-center justify-center cursor-pointer" title="Delete File">' +
           '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">' +
             '<path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />' +
           '</svg>' +
@@ -725,7 +725,7 @@ function formatBytes(bytes) {
 
 function pathDir(relPath) {
   const idx = relPath.lastIndexOf('/')
-  const idx2 = relPath.lastIndexOf('\\')
+  const idx2 = relPath.lastIndexOf('\\\\')
   const pivot = Math.max(idx, idx2)
   if (pivot === -1) return ''
   return relPath.substring(0, pivot)
