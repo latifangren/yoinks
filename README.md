@@ -35,7 +35,7 @@ Download videos from YouTube, X/Twitter, Instagram, Threads, TikTok and 1,800+ o
 
 ```sh
 # Clone repository
-git clone https://github.com/latif/yoinks.git
+git clone https://github.com/latifangren/yoinks.git
 cd yoinks
 
 # Install dependencies and build
